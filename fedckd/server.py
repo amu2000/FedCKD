@@ -11,6 +11,36 @@ from torch.nn import functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 
+def unpack_upload_package(package):
+    """Restore CPU public predictions from active rows and a big-endian bit mask.
+
+    Inactive rows use the client's original -1 sentinel, preserving the full
+    masked logits tensor as well as the predictions used for voting.
+    """
+    sparse_logits = package["sparse_logits"]
+    packed_mask = package["packed_mask"]
+    num_pub = package["num_pub"]
+    num_classes = package["num_classes"]
+    if (not isinstance(num_pub, int) or num_pub < 0
+            or not isinstance(num_classes, int) or num_classes <= 0):
+        raise ValueError("Invalid public sample or class count")
+    if (not isinstance(packed_mask, np.ndarray)
+            or packed_mask.dtype != np.uint8
+            or packed_mask.shape != ((num_pub + 7) // 8,)):
+        raise ValueError("Packed mask must contain ceil(num_pub / 8) uint8 bytes")
+    mask_bool = torch.from_numpy(
+        np.unpackbits(packed_mask, bitorder="big")[:num_pub]
+    ).to(device=sparse_logits.device, dtype=torch.bool)
+    if sparse_logits.shape != (int(mask_bool.sum().item()), num_classes):
+        raise ValueError("Sparse logits must match active mask rows and class count")
+    reconstructed_logits = torch.full(
+        (num_pub, num_classes), -1,
+        dtype=sparse_logits.dtype, device=sparse_logits.device,
+    )
+    reconstructed_logits[mask_bool] = sparse_logits
+    return reconstructed_logits, mask_bool
+
+
 def construct_teacher_labels(client_logits, client_masks, audits):
     """Return teacher logits, a sample mask, and eligible client positions.
 
@@ -72,9 +102,10 @@ class FedCKDServer:
             return self.global_model
         self._current_round = round_id
         self.public_dataloader = public_dataloader
+        predictions = [unpack_upload_package(package) for package in packages]
         teacher, valid, self._eligible_client_indices = construct_teacher_labels(
-            torch.stack([p["public_logits"] for p in packages]),
-            torch.stack([p["mask_vector"] for p in packages]),
+            torch.stack([logits for logits, _ in predictions]),
+            torch.stack([mask for _, mask in predictions]),
             [p["prototype_head_audit"] for p in packages],
         )
         self.uploaded_models = []

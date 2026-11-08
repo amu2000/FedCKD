@@ -59,6 +59,32 @@ are never used. Upload tensors are on the CPU and package order determines
 the voting tie order. The server's `update` consumes these packages and the
 same public loader.
 
+### Sparse upload format
+
+`prepare_upload_package` sends `sparse_logits` with shape `[N_active, C]`,
+`packed_mask` as a one-dimensional NumPy `uint8` array, and integer dimensions
+`num_pub` and `num_classes`. Only rows whose public mask equals one are sent.
+The mask uses NumPy's big-endian bit order and takes `ceil(N_pub / 8)` bytes
+(625 bytes for 5,000 public images). Logit values and their dtype are preserved;
+there is no quantization. The upload no longer contains dense `public_logits`
+or `mask_vector` fields. Client metadata, audit scalars, and the optional
+`local_model_params` for rounds 0-4 keep their existing format.
+
+At the receive boundary, `unpack_upload_package` restores the boolean mask and
+the original `[N_pub, C]` tensor before teacher construction. Inactive rows
+are filled with `-1`, matching `validate_public_data` exactly. Voting, client
+eligibility, alignment, and distillation keep their existing behavior. Both
+client and server must use this upload format; legacy dense packages are not
+accepted. This component prepares transport data but does not implement a
+network transport or measure wire-level serialization overhead.
+
+Regression checks can be run from this directory with PyTorch and NumPy
+installed:
+
+```sh
+python -m unittest discover -s tests -v
+```
+
 This extraction is not a full reproduction package. Full-run accuracy results
 from the runnable edition are not asserted for this component-only edition.
 

@@ -201,10 +201,19 @@ class FedCKDClient:
         """Package public predictions and audit scalars, plus optional alignment parameters."""
         if not hasattr(self, "public_logits"):
             raise RuntimeError("Process public images before preparing an upload")
+        logits = self.public_logits
+        masks = self.public_masks
+        if logits.ndim != 2 or masks.shape != (logits.size(0),):
+            raise ValueError("Public logits and masks must have matching sample counts")
+        if not ((masks == 0) | (masks == 1)).all():
+            raise ValueError("Public masks must be binary")
+        mask_bool = masks.to(device=logits.device, dtype=torch.bool)
         package = {
             "client_id": self.id,
-            "public_logits": self.public_logits,
-            "mask_vector": self.public_masks,
+            "sparse_logits": logits[mask_bool].detach().cpu(),
+            "packed_mask": np.packbits(mask_bool.cpu().numpy(), bitorder="big"),
+            "num_pub": logits.size(0),
+            "num_classes": logits.size(1),
             "label_type": self.label_type,
             "label_cnt": self.label_cnt,
             "train_samples": self.train_samples,
